@@ -1004,4 +1004,46 @@ void MacFontManager::printFontRegistry(int debugLevel, uint32 channel) {
 		}
 }
 
+Graphics::Font* MacFontManager::loadTTFFont(const Common::String &ttfName, int size) {
+    Common::String cacheKey = Common::String::format("%s_%d", ttfName.c_str(), size);
+
+    if (_loadedTTFFonts.contains(cacheKey)) {
+        return _loadedTTFFonts[cacheKey];
+    }
+
+    Graphics::Font *font = nullptr;
+#ifdef USE_FREETYPE2
+	Common::Path fontPath("gui/themes/fonts/NotoSans-Regular.ttf");
+
+	Common::File testFile;
+	if (testFile.open(fontPath)) {
+		debug("Font file successfuly opened: %s", fontPath.toString().c_str());
+		testFile.close();
+	} else {
+		warning("Can't open font file: %s", fontPath.toString().c_str());
+	}
+
+	Common::File fontFile;
+	if (fontFile.open(fontPath)) { 
+		font = Graphics::loadTTFFont(
+			&fontFile,
+			DisposeAfterUse::NO,
+			size
+		);
+		if (font) {
+			_loadedTTFFonts[cacheKey] = font;
+			debug("Loaded TTF font: %s (size: %d)", ttfName.c_str(), size);
+		} else {
+			warning("Failed to load TTF font: %s (size: %d)", ttfName.c_str(), size);
+		}
+	} else {
+		warning("Could not open TTF font file: %s", fontPath.toString().c_str());
+	}
+#else
+    warning("FreeType2 support is not enabled. Cannot load TTF font: %s", ttfName.c_str());
+#endif
+
+    return font;
+}
+
 } // End of namespace Graphics
