@@ -21,6 +21,7 @@
 
 #include "common/system.h"
 #include "common/unicode-bidi.h"
+#include "graphics/fonts/ttf.h"
 
 #include "graphics/macgui/mactext.h"
 
@@ -39,8 +40,8 @@ const Graphics::TTFMap ttfFamily[] = {
 	{"NotoSans-Bold.ttf", Graphics::kMacFontBold},
 	{"NotoSerif-Italic.ttf", Graphics::kMacFontItalic},
 	{"NotoSerif-Bold-Italic.ttf", Graphics::kMacFontBold | Graphics::kMacFontItalic},
-	{nullptr, 0}
-};
+	{"NotoSans-Regular.ttf", Graphics::kMacFontUnderline},
+	{nullptr, 0}};
 
 RichTextWidget::RichTextWidget(GuiObject *boss, int x, int y, int w, int h, bool scale, const Common::U32String &text, const Common::U32String &tooltip)
 	: Widget(boss, x, y, w, h, scale, tooltip), CommandSender(nullptr)  {
@@ -197,21 +198,56 @@ void RichTextWidget::createWidget() {
 
 	const int fontHeight = g_gui.xmlEval()->getVar("Globals.Font.Height", 25);
 
-#if 1
-	Graphics::MacFont macFont(Graphics::kMacFontNewYork, fontHeight, Graphics::kMacFontRegular);
-	(void)ttfFamily;
-#else
-	int newId = wm->_fontMan->registerTTFFont(ttfFamily);
-	Graphics::MacFont macFont(newId, fontHeight, Graphics::kMacFontRegular);
+	static int cachedFontId = -1;
+	static Common::HashMap<int, Graphics::Font *> ttfFonts;
+	Graphics::MacFont macFont;
+#ifdef USE_FREETYPE2
+	// Register TTF fonts once and cache the ID
+	if (ttfFonts.empty()) {
+		for (int i = 0; ttfFamily[i].ttfName; i++) {
+			int slant = ttfFamily[i].slant;
+			if (!ttfFonts.contains(slant)) {
+				Graphics::Font *font = Graphics::loadTTFFontFromArchive(ttfFamily[i].ttfName, fontHeight);
+				if (font) {
+					debug("Loaded %s - slant %d", ttfFamily[i].ttfName, slant);
+					ttfFonts[slant] = font;
+				} else {
+					warning("Cant load %s from fonts.dat", ttfFamily[i].ttfName);
+				}
+			}
+		}
+	}
+
+	if (cachedFontId == -1) {
+		cachedFontId = wm->_fontMan->registerTTFFont(ttfFamily, ttfFonts, fontHeight);
+		if (cachedFontId == -1) {
+			warning("Failed to register ttfFamily");
+		} else {
+			// Add font in registry
+			debug("Registered TTF font family with base ID: %d", cachedFontId);
+		}
+	}
+
+	// Use the cached TTF font ID if available
+	if (cachedFontId != -1) {
+		macFont = Graphics::MacFont(cachedFontId, fontHeight, Graphics::kMacFontRegular, true);
+		debug("Using TTF font with ID: %d", cachedFontId);
+	} else {
+		warning("No TTF fonts available, falling back to default");
+		macFont = Graphics::MacFont(Graphics::kMacFontNewYork, fontHeight, Graphics::kMacFontRegular);
+	}
 #endif
 
+	// Create MacText with the selected font
+	debug("Creating MacText with font ID: %d, size: %d, slant: %d", macFont.getId(), macFont.getSize(), macFont.getSlant());
 	_txtWnd = new Graphics::MacText(Common::U32String(), wm, &macFont, fg, bg, _textWidth, Graphics::kTextAlignLeft);
-
+	debug("MacText created successfully");
 	if (!_imageArchive.empty())
 		_txtWnd->setImageArchive(_imageArchive);
-
+	debug("Setting Markdown text");
 	_txtWnd->setMarkdownText(_text);
 
+	debug("Markdown text set successfully");
 	if (_surface)
 		_surface->create(_textWidth, _textHeight, g_gui.getWM()->_pixelformat);
 	else

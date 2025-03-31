@@ -559,31 +559,46 @@ const Font *MacFontManager::getFont(MacFont *macFont) {
 #ifdef USE_FREETYPE2
 	if (!font && !(_mode & MacGUIConstants::kWMModeForceMacFonts)) {
 		if (_mode & kWMModeUnicode) {
-			if (macFont->getSize() <= 0) {
-				debugC(1, kDebugLevelMacGUI, "MacFontManager::getFont() - Font size <= 0!");
-			}
-			Common::HashMap<int, const Graphics::Font *>::iterator pFont = _uniFonts.find(macFont->getSize());
-
+			// Combine size and slant into a single int key (e.g., size * 100 + slant)
+			int cacheKey = macFont->getSize() * 100 + macFont->getSlant();
+			Common::HashMap<int, const Graphics::Font *>::iterator pFont = _uniFonts.find(cacheKey);
 			if (pFont != _uniFonts.end()) {
 				font = pFont->_value;
+				debug("Retrieved cached TTF font for size %d, slant %d", macFont->getSize(), macFont->getSlant());
 			} else {
-				int newId = macFont->getId();
-				int newSlant = macFont->getSlant();
-				int familyId = getFamilyId(newId, newSlant);
-				if (_fontInfo.contains(familyId) && !(_mode & kWMModeForceMacFontsInWin95)) {
-					font = Graphics::loadTTFFontFromArchive(_fontInfo[familyId]->name, macFont->getSize(), Graphics::kTTFSizeModeCharacter, 0, 0, Graphics::kTTFRenderModeMonochrome);
-					_uniFonts[macFont->getSize()] = font;
+				int familyId = getFamilyId(macFont->getId(), macFont->getSlant());
+				if (_fontInfo.contains(familyId)) {
+					const Common::String &fontName = _fontInfo[familyId]->name;
+					font = Graphics::loadTTFFontFromArchive(fontName, macFont->getSize(), Graphics::kTTFSizeModeCharacter);
+					if (font) {
+						debug("Loaded TTF font: %s for size %d, slant %d", fontName.c_str(), macFont->getSize(), macFont->getSlant());
+						_uniFonts[cacheKey] = font;
+					} else {
+						warning("Failed to load TTF font from archive: %s", fontName.c_str());
+					}
 				} else {
-					font = Graphics::loadTTFFontFromArchive("LiberationSans-Regular.ttf", macFont->getSize(), Graphics::kTTFSizeModeCharacter, 0, 0, Graphics::kTTFRenderModeMonochrome);
-					_uniFonts[macFont->getSize()] = font;
+					font = Graphics::loadTTFFontFromArchive("LiberationSans-Regular.ttf", macFont->getSize(), Graphics::kTTFSizeModeCharacter);
+					if (font) {
+						debug("Loaded fallback TTF font: LiberationSans-Regular.ttf for size %d, slant %d", macFont->getSize(), macFont->getSlant());
+						_uniFonts[cacheKey] = font;
+					} else {
+						warning("Failed to load fallback TTF font: LiberationSans-Regular.ttf");
+					}
 				}
 			}
 		} else {
-			int newId = macFont->getId();
-			int newSlant = macFont->getSlant();
-			int familyId = getFamilyId(newId, newSlant);
-			font = Graphics::loadTTFFontFromArchive(_fontInfo[familyId]->name, macFont->getSize(), Graphics::kTTFSizeModeCharacter, 0, 0, Graphics::kTTFRenderModeMonochrome);
-			_uniFonts[macFont->getSize()] = font;
+			// Non-Unicode mode (less common), still cache by size+slant
+			int cacheKey = macFont->getSize() * 100 + macFont->getSlant();
+			if (_uniFonts.contains(cacheKey)) {
+				font = _uniFonts[cacheKey];
+			} else {
+				int familyId = getFamilyId(macFont->getId(), macFont->getSlant());
+				if (_fontInfo.contains(familyId)) {
+					font = Graphics::loadTTFFontFromArchive(_fontInfo[familyId]->name, macFont->getSize(), Graphics::kTTFSizeModeCharacter);
+					if (font)
+						_uniFonts[cacheKey] = font;
+				}
+			}
 		}
 	}
 #endif
@@ -713,9 +728,11 @@ int MacFontManager::registerFontName(Common::String name, int preferredId) {
 	return id;
 }
 
-int MacFontManager::registerTTFFont(const TTFMap ttfList[]) {
-	int defaultValue = 1;
+#ifdef USE_FREETYPE2
+int MacFontManager::registerTTFFont(const TTFMap ttfList[], const Common::HashMap<int, Graphics::Font *> &loadedFonts, int fontSize) {
+	int defaultValue = -1;
 	int realId = 100;
+
 	auto checkId = [&](int id) {
 		for (const TTFMap *i = ttfList; i->ttfName; i++) {
 			if (_fontInfo.contains(id + i->slant)) {
@@ -729,35 +746,60 @@ int MacFontManager::registerTTFFont(const TTFMap ttfList[]) {
 		realId++;
 
 	for (const TTFMap *i = ttfList; i->ttfName; i++) {
-		int id = realId;
 		Common::String name = i->ttfName;
+		int slant = i->slant;
+		int id = realId + slant;
 
 		if (name.empty()) {
-			if (defaultValue == 1)
+			if (defaultValue == -1)
 				defaultValue = id;
 			continue;
 		}
-
-		if (_fontIds.contains(name)) {
-			if (defaultValue == 1)
-				defaultValue = _fontIds[name];
-			continue;
-		}
-
-		int slant = 0;
-
-		id += slant | i->slant;
 
 		FontInfo *info = new FontInfo;
 		info->name = name;
 		_fontInfo[id] = info;
 		_fontIds[name] = id;
-		if (defaultValue == 1)
-			defaultValue = id;
+
+		if (loadedFonts.contains(slant)) {
+			Common::String baseName = name.substr(0, name.findLastOf('.'));
+			Common::String shortBaseName = baseName.substr(0, baseName.find("-"));
+			if (shortBaseName.empty())
+				shortBaseName = baseName;
+			Common::String fontName = Common::String::format("%s-%d-%d", shortBaseName.c_str(), slant, fontSize);
+
+			MacFont *macfont = new MacFont(id, fontSize, slant, true);
+			macfont->setFont(loadedFonts[slant], true);
+			_fontRegistry.setVal(fontName, macfont);
+			debug("Registered %s into _fontRegistry", fontName.c_str());
+
+			int extraSize = 16;
+			Common::String extraFontName = Common::String::format("%s-%d-%d", shortBaseName.c_str(), slant, extraSize);
+			if (!_fontRegistry.contains(extraFontName)) {
+				Graphics::Font *extraFont = Graphics::loadTTFFontFromArchive(name, extraSize, Graphics::kTTFSizeModeCell);
+				if (extraFont) {
+					MacFont *extraMacFont = new MacFont(id, extraSize, slant, true);
+					extraMacFont->setFont(extraFont, true);
+					_fontRegistry.setVal(extraFontName, extraMacFont);
+					debug("Registered %s into _fontRegistry", extraFontName.c_str());
+				}
+			}
+		} else {
+			warning("Font for slant %d (%s) not pre-loaded", slant, name.c_str());
+		}
+
+		if (defaultValue == -1)
+			defaultValue = realId;
+	}
+
+	if (defaultValue == -1) {
+		warning("No TTF fonts registered from ttfList");
+	} else {
+		debug("Registered TTF font family with base ID: %d", realId);
 	}
 	return defaultValue;
 }
-
+#endif
 int MacFontManager::getFamilyId(int newId, int newSlant) {
 	if (_fontInfo.contains(newId + newSlant)) {
 		return newId + newSlant;

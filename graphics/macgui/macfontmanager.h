@@ -105,14 +105,14 @@ struct FontInfo {
 
 class MacFont {
 public:
-	MacFont(int id = kMacFontSystem, int size = 12, int slant = kMacFontRegular) {
+	MacFont(int id = kMacFontSystem, int size = 12, int slant = kMacFontRegular, bool isTrueType = false) {
 		_id = id;
 		_size = size ? size : 12;
 		_slant = slant;
 		_fallback = FontMan.getFontByUsage(Graphics::FontManager::kBigGUIFont);
 		_fallbackName = Common::String(((const BdfFont *)_fallback)->getFamilyName());
 		_generated = false;
-		_truetype = false;
+		_truetype = isTrueType;
 		_font = NULL;
 	}
 
@@ -201,7 +201,7 @@ public:
 
 	void printFontRegistry(int debugLevel, uint32 channel);
 
-	int registerTTFFont(const Graphics::TTFMap ttfList[]);
+	int registerTTFFont(const Graphics::TTFMap ttfList[], const Common::HashMap<int, Graphics::Font *> &loadedFonts, int fontSize);
 
 	int getFamilyId(int newId, int newSlant);
 
